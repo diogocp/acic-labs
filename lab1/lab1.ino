@@ -14,27 +14,18 @@ const byte YELLOW  =  2;
 const byte BUTTON  = 12;
 
 // The sequence in which LEDs are lit
-const byte sequence[] = {RED, GREEN, BLUE, YELLOW, ALL_OFF};
-const size_t sequence_len = sizeof(sequence);
+const byte SEQUENCE[] = {RED, GREEN, BLUE, YELLOW, ALL_OFF};
+const size_t SEQUENCE_LEN = sizeof(SEQUENCE);
 
 // Delay (in milliseconds) between each state transition
 const unsigned long INTERVAL = 1000;
 
-// The current position in the sequence
-byte sequence_pos = 0;
+// How long we must see a new button state before accepting it
+const unsigned long DEBOUNCE_INTERVAL = 50;
 
-// When the button is pressed, this flag is set to true, and
-// the sequence stops until the button is pressed again
-bool stopped = false;
-
-unsigned long start_time = 0;
-
-int prevButtonState = LOW;
-int buttonState;
 
 void setup() {
     pinMode(BUTTON, INPUT_PULLUP);
-    prevButtonState = digitalRead(BUTTON);
 
     // Initialize the outputs
     digitalWrite(RED, LOW);
@@ -49,27 +40,60 @@ void setup() {
 }
 
 void loop() {
-    byte led = sequence[sequence_pos];
+    // The current position in the sequence
+    static size_t sequence_pos = 0;
+
+    byte led = SEQUENCE[sequence_pos];
 
     if (led >= 0) {
         digitalWrite(led, HIGH);
     }
 
-    start_time = millis();
-    while (stopped || (millis() - start_time <= INTERVAL)) {
-        buttonState = digitalRead(BUTTON);
-        if (prevButtonState == LOW && buttonState == HIGH) {
-            // Toggle stopped state
-            stopped = !stopped;
-        }
-        prevButtonState = buttonState;
-    }
+    wait_loop();
 
     if (led >= 0) {
         digitalWrite(led, LOW);
     }
 
-    if (++sequence_pos >= sequence_len) {
+    if (++sequence_pos >= SEQUENCE_LEN) {
         sequence_pos = 0;
+    }
+}
+
+void wait_loop() {
+    // Initialize debouncing variables. These are marked static
+    // so that their values are preserved over LED state changes.
+    static byte button_current = HIGH;
+    static byte button_previous = HIGH;
+    static byte button_debounced = HIGH;
+    static unsigned long switch_time = 0;
+
+    // When the button is pressed, this flag is set to true, and
+    // the sequence stops until the button is pressed again
+    bool stopped = false;
+
+    unsigned long start_time = millis();
+
+    while (stopped || (millis() - start_time <= INTERVAL)) {
+        // Read the button state
+        button_current = digitalRead(BUTTON);
+
+        // Debounce
+        if (button_current != button_previous) {
+            switch_time = millis();
+        }
+
+        if ((millis() - switch_time) >= DEBOUNCE_INTERVAL) {
+            if (button_debounced == LOW && button_current == HIGH) {
+                // When the button is released (LOW -> HIGH),
+                // we toggle the stopped state.
+                stopped = !stopped;
+            }
+
+            // Store the new debounced button state
+            button_debounced = button_current;
+        }
+
+        button_previous = button_current;
     }
 }
