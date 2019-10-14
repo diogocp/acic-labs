@@ -35,8 +35,8 @@ Rotation
 --------
 
 The mapping process implemented was a straightforward linear conversion
-from the sensor values (ranging from 0 to 1023) to the blinking period
-(ranging from 200 to 2000 milliseconds).
+from the sensor values (ranging from 0 to 1023) to the blinking
+half-period period (ranging from 100 to 1000 milliseconds).
 
 For calibration, we verified that the lowest observed sensor value was 0
 and the highest was 1023. We also checked that the progression in values
@@ -100,3 +100,9 @@ functions:
   - temperature: 7-9 μs
   - rotation:    2-5 μs
   - light:       8 μs
+
+In the worst case, the loop takes 112×3 + 9 + 5 + 8 = 358 μs to complete
+one iteration. The only hard constraint that we have is that this time
+must be lower than half of the minimum blinking period of the LED.
+In fact, 358 μs is only 0.358% of that time (100 ms), so there is no
+issue.

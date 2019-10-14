@@ -77,7 +77,7 @@ int rotation_sensor() {
     int value = analogRead(POTENTIOMETER);
 
     // Convert the rotation value to a blinking rate
-    int blink_period = map(value, 0, 1023, MIN_BLINK_PERIOD, MAX_BLINK_PERIOD);
+    int blink_period = map(value, 0, 1023, MIN_BLINK_PERIOD/2, MAX_BLINK_PERIOD/2);
 
     return blink_period;
 }
