@@ -51,18 +51,19 @@ void loop() {
     bool temp_above_threshold = temperature_filter(temperature);
 
     Wire.beginTransmission(I2C_ADDRESS);
-    Wire.write(highByte(blink_period));
+    // Format: 1 bit temperature | 15 bits blink period | 8 bits brightness
+    Wire.write((temp_above_threshold << 7) | highByte(blink_period));
     Wire.write(lowByte(blink_period));
     Wire.write(brightness);
-    Wire.write(byte(temp_above_threshold));
     Wire.endTransmission();
 
     // Detect failure of the red LED (open-circuit)
-    static byte red_led_healthy = true;
+    static byte red_led_healthy = 1;
     static unsigned long last_health_check = 0;
     if (millis() - last_health_check >= HEALTH_CHECK_INTERVAL) {
         Wire.requestFrom(I2C_ADDRESS, byte(1));
-        byte red_led_healthy = Wire.read();
+        red_led_healthy = Wire.read();
+        last_health_check = millis();
     }
 
 #ifdef DEBUG

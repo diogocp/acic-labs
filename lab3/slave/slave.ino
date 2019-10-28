@@ -79,10 +79,14 @@ void loop() {
 
 
 void data_received(int num_bytes) {
-    if (num_bytes == 4 || Wire.available() >= 4) {
-        blink_period = (Wire.read() << 8) | Wire.read();
+    // Format: 1 bit temperature | 15 bits blink period | 8 bits brightness
+    if (num_bytes == 3 || Wire.available() >= 3) {
+        byte first_byte = Wire.read();
+        blink_period = Wire.read();
         brightness = Wire.read();
-        temp_above_threshold = Wire.read();
+
+        temp_above_threshold = first_byte >> 7;
+        blink_period |= ((first_byte & 0x7f) << 8);
     }
 }
 
