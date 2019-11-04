@@ -28,6 +28,8 @@ const word MAX_BLINK_PERIOD = 2000;
 const float TEMPERATURE_THRESHOLD = 23.0;
 const float TEMPERATURE_NOISE_THRESHOLD = 0.5;
 
+const float LIGHT_SENSOR_SMOOTHING_FACTOR = 0.04;
+
 const byte I2C_ADDRESS = 8;
 
 // Interval between LED health checks, in milliseconds
@@ -91,11 +93,15 @@ int rotation_sensor() {
 }
 
 byte brightness_sensor() {
-    // Read the light sensor value
-    int value = analogRead(LIGHT_SENSOR);
+    static float previous_value = 0;
+    byte brightness = 0;
 
-    // Map the light sensor value to a brightness level
-    byte brightness = map(value, 0, 1023, 0, 255);
+    // Read the light sensor value
+    int sensor_value = analogRead(LIGHT_SENSOR);
+
+    // Exponentially weighted moving average
+    previous_value += LIGHT_SENSOR_SMOOTHING_FACTOR * (sensor_value - previous_value);
+    brightness = map(round(previous_value), 0, 1023, 255, 0);
 
     return brightness;
 }
@@ -114,7 +120,7 @@ float temperature_sensor() {
 }
 
 bool temperature_filter(float temperature) {
-    // This function implements a simple mechanism to filter sensor noise.
+    // This function implements a comparator with hysteresis to filter sensor noise.
 
     static bool above_threshold = false;
 
