@@ -9,6 +9,16 @@
 #include <Wire.h>
 
 
+// Identification of the inputs (orientation pins)
+const int COORDINATE_X0 = A0;
+const int COORDINATE_X1 = A1;
+const int COORDINATE_Y0 = A2;
+const int COORDINATE_Y1 = A3;
+
+// Identification of the inputs (orientation pins)
+const int ORIENTATION_S_PIN = 10;
+const int ORIENTATION_W_PIN = 11;
+
 // Identification of the outputs (traffic lights)
 const int TL_NS_R = 4;
 const int TL_NS_Y = 5;
@@ -30,10 +40,18 @@ const unsigned long PERIOD = 20000;
 const unsigned long YELLOW_DURATION = 1000;
 const unsigned long MIN_DUTY_CYCLE = 5000;
 const unsigned long MAX_DUTY_CYCLE = 15000;
-// Time for a car to go from one intersection to the next
-const unsigned long TRAVEL_TIME = 6000;
+
+// Time for a car to go from one intersection to the next (hundreds of ms)
+const unsigned long TRAVEL_TIME = 60;
 
 const byte I2C_ADDRESS = 8;
+
+enum Direction {
+    North = 0,
+    South = 1,
+    East = 2,
+    West = 3
+};
 
 // Definition of the message format
 enum Event {
@@ -54,22 +72,48 @@ struct Message {
     byte cars_w;
     unsigned long timestamp;
 };
+
 void print_message(Message* m);
+void cars_ns();
+void cars_ew();
+void mode_standby();
+void message_received(int num_bytes);
+void switch_lights(Event e, int total_duration);
 
-
-byte mode = 1;
+byte mode = 2;
 
 // Cars counted at the north/south/east/west access during the last period
-volatile byte cars_n = 0;
-volatile byte cars_s = 0;
-volatile byte cars_e = 0;
-volatile byte cars_w = 0;
+volatile byte cars[] = {0, 0, 0, 0};
 
-volatile byte orientation_s = false;
-volatile byte orientation_w = false;
+byte coordinate_x = 0;
+byte coordinate_y = 0;
+byte orientation_s = false;
+byte orientation_w = false;
+
+unsigned long period_start_ns = 0;
+unsigned long period_start_ew = 0;
+volatile unsigned long neighbor_period_start = 0;
+volatile bool adjust_to_neighbor = false;
+volatile long phase_diff = 0;
 
 
 void setup() {
+    // Input pins for the identification of the intersection
+    pinMode(COORDINATE_X0, INPUT_PULLUP);
+    pinMode(COORDINATE_X1, INPUT_PULLUP);
+    pinMode(COORDINATE_Y0, INPUT_PULLUP);
+    pinMode(COORDINATE_Y1, INPUT_PULLUP);
+
+    coordinate_x = (digitalRead(COORDINATE_X1) == HIGH ? 2 : 0) + (digitalRead(COORDINATE_X0) == HIGH ? 1 : 0);
+    coordinate_y = (digitalRead(COORDINATE_Y1) == HIGH ? 2 : 0) + (digitalRead(COORDINATE_Y0) == HIGH ? 1 : 0);
+
+    // Input pins for the orientation of the intersection
+    pinMode(ORIENTATION_S_PIN, INPUT_PULLUP);
+    pinMode(ORIENTATION_W_PIN, INPUT_PULLUP);
+
+    orientation_s = digitalRead(ORIENTATION_S_PIN) == HIGH;
+    orientation_w = digitalRead(ORIENTATION_W_PIN) == HIGH;
+
     pinMode(LD_NS, INPUT_PULLUP);
     pinMode(LD_EW, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(LD_NS), cars_ns, FALLING);
@@ -100,91 +144,83 @@ void setup() {
 void mode01() {
     unsigned long duty_cycle = PERIOD / 2;
 
-    if (mode > 0) {
-        if (cars_n + cars_s + cars_e + cars_w > 0) {
-            duty_cycle = PERIOD * (cars_n + cars_s) / (cars_n + cars_s + cars_e + cars_w);
+    if (mode == 1) {
+        if (cars[North] + cars[South] + cars[East] + cars[West] > 0) {
+            duty_cycle = PERIOD * (cars[North] + cars[South]) / (cars[North] + cars[South] + cars[East] + cars[West]);
             if (duty_cycle < MIN_DUTY_CYCLE) duty_cycle = MIN_DUTY_CYCLE;
             if (duty_cycle > MAX_DUTY_CYCLE) duty_cycle = MAX_DUTY_CYCLE;
         }
     }
-    Serial.print("Duty cycle: "); Serial.println(duty_cycle);
-    cars_n = cars_s = cars_e = cars_w = 0;
+    cars[North] = cars[South] = cars[East] = cars[West] = 0;
 
-    switch_lights(R2G_N, duty_cycle);
-    switch_lights(R2G_E, PERIOD - duty_cycle);
+    switch_lights(R2G_N, duty_cycle, false);
+    switch_lights(R2G_E, PERIOD - duty_cycle, false);
 }
 
-void switch_lights(Event e, int total_duration) {
-    int tl_g;
-    int tl_r;
-    int tl_r_ok;
+void mode2() {
+    unsigned long duty_cycle = PERIOD / 2;
 
-    if (e == R2G_N || e == R2G_S) {
-        tl_g = TL_NS_G;
-        tl_r = TL_EW_R;
-        tl_r_ok = TL_EW_R_OK;
-    } else if (e == R2G_E || R2G_W) {
-        tl_g = TL_EW_G;
-        tl_r = TL_NS_R;
-        tl_r_ok = TL_NS_R_OK;
-    } else {
-        // Unsupported event; go to standby mode until reset
-        while (true) mode_standby();
+    if (cars[North] + cars[South] + cars[East] + cars[West] > 0) {
+        duty_cycle = PERIOD * (cars[North] + cars[South]) / (cars[North] + cars[South] + cars[East] + cars[West]);
+        if (duty_cycle < MIN_DUTY_CYCLE) duty_cycle = MIN_DUTY_CYCLE;
+        if (duty_cycle > MAX_DUTY_CYCLE) duty_cycle = MAX_DUTY_CYCLE;
     }
 
-    digitalWrite(tl_g, HIGH);
-    digitalWrite(tl_r, HIGH);
-    for (int i = 0; i < 100; i++) {
-        // LED health check
-        while (digitalRead(tl_r_ok) == LOW)
-        {
-            mode_standby();
-            digitalWrite(tl_g, HIGH);
-            digitalWrite(tl_r, HIGH);
-        }
-        delay((total_duration - YELLOW_DURATION) / 100);
-    }
-    digitalWrite(tl_r, LOW);
-    digitalWrite(tl_g, LOW);
+    byte last_cars[] = {cars[North], cars[South], cars[East], cars[West]};
+    cars[North] = cars[South] = cars[East] = cars[West] = 0;
 
-    // Yellow for 1 second
-    digitalWrite(TL_NS_Y, HIGH);
-    digitalWrite(TL_EW_Y, HIGH);
-    delay(YELLOW_DURATION);
-    digitalWrite(TL_NS_Y, LOW);
-    digitalWrite(TL_EW_Y, LOW);
-}
-
-void loop() {
-    // TODO: this is just a demo of sending/receiving messages
-    static unsigned long last_message_sent = millis();
-
-    Message m = {
-        .dst_x = 1,
-        .dst_y = 3,
-        .src_x = 2,
-        .src_y = 2,
-        .event = R2G_S,
-        .cars_n = cars_n,
-        .cars_s = cars_s,
-        .cars_e = cars_e,
-        .cars_w = cars_w,
+    Message m_ns = {
+        .dst_x = coordinate_x,
+        .dst_y = orientation_s ? coordinate_y + 1 : coordinate_y - 1,
+        .src_x = coordinate_x,
+        .src_y = coordinate_y,
+        .event = orientation_s ? R2G_S : R2G_N,
+        .cars_n = last_cars[North],
+        .cars_s = last_cars[South],
+        .cars_e = last_cars[East],
+        .cars_w = last_cars[West],
         .timestamp = millis()/100
     };
+    Wire.beginTransmission(I2C_ADDRESS);
+    Wire.write((byte*)&m_ns, sizeof(m_ns));
+    Wire.endTransmission();
 
-    if (millis() > last_message_sent + PERIOD) {
-        Wire.beginTransmission(I2C_ADDRESS);
-        Wire.write((byte*)&m, sizeof(m));
-        Wire.endTransmission();
-        last_message_sent = millis();
-    }
+    period_start_ns = millis()/100;
 
+    switch_lights(R2G_N, duty_cycle, true);
+
+    Message m_ew = {
+        .dst_x = orientation_w ? coordinate_x + 1 : coordinate_x - 1,
+        .dst_y = coordinate_y,
+        .src_x = coordinate_x,
+        .src_y = coordinate_y,
+        .event = orientation_w ? R2G_W : R2G_E,
+        .cars_n = last_cars[North],
+        .cars_s = last_cars[South],
+        .cars_e = last_cars[East],
+        .cars_w = last_cars[West],
+        .timestamp = millis()/100
+    };
+    Wire.beginTransmission(I2C_ADDRESS);
+    Wire.write((byte*)&m_ew, sizeof(m_ew));
+    Wire.endTransmission();
+
+    period_start_ew = millis()/100;
+
+    switch_lights(R2G_E, PERIOD - duty_cycle, false);
+}
+
+
+void loop() {
     switch (mode) {
         case 0:
         case 1:
             mode01();
             break;
-        case 255:
+        case 2:
+            mode2();
+            break;
+        default:
             mode_standby();
             break;
     }
@@ -202,10 +238,68 @@ void message_received(int num_bytes) {
     Message* m = ((Message*)&buffer);
     print_message(m);
 
-    // TODO: handle the message
-    // note that `m` is backed by `buffer` which is local
-    // need to make it global if we want to process `m` outside this handler
+    Direction max_flow_direction = get_max_flow_direction(cars);
+
+    if(cars[max_flow_direction] == 0) {
+        adjust_to_neighbor = false;
+    } else if(m->dst_x == coordinate_x && m->dst_y == coordinate_y
+              && buffer[1] == get_neighbor(max_flow_direction)
+              && max_flow_direction == get_max_flow_direction(&buffer[3])) {
+        neighbor_period_start = millis()/100;
+        adjust_to_neighbor = true;
+        if(m->event == R2G_N | m->event == R2G_S) {
+            phase_diff = PERIOD/100 + ((long)period_start_ns - (long)neighbor_period_start);
+        } else {
+            phase_diff = PERIOD/100 + ((long)period_start_ew - (long)neighbor_period_start);
+        }
+        Serial.print("Phase: "); Serial.println(phase_diff);
+    }
 }
+
+Direction get_max_flow_direction(byte* cars) {
+    byte maximum = 0;
+    byte argmax = 0;
+    for(int i = 0; i < 4; i++) {
+        //Serial.print("cars[");Serial.print(i);Serial.print("] = ");Serial.println(cars[i]);
+        if(cars[i] > maximum) {
+            maximum = cars[i];
+            argmax = i;
+        }
+    }
+    return argmax;
+}
+
+byte get_neighbor(Direction dir) {
+    int dest_x;
+    int dest_y;
+
+    switch(dir) {
+        case North:
+            dest_x = coordinate_x;
+            dest_y = coordinate_y + 1;
+            break;
+        case South:
+            dest_x = coordinate_x;
+            dest_y = coordinate_y - 1;
+            break;
+        case East:
+            dest_x = coordinate_x + 1;
+            dest_y = coordinate_y;
+            break;
+        case West:
+            dest_x = coordinate_x - 1;
+            dest_y = coordinate_y;
+            break;
+    }
+
+    if(dest_x < 0 || dest_x >= (1<<4) ||
+       dest_y < 0 || dest_y >= (1<<4)) {
+        return coordinate_x | (coordinate_y << 4);
+    }
+    return dest_x | (dest_y << 4);
+}
+
+
 
 // Prints a message in JSON format
 void print_message(Message* m) {
@@ -242,16 +336,67 @@ void mode_standby() {
 
 void cars_ns() {
     if (orientation_s) {
-        cars_s++;
+        cars[South]++;
     } else {
-        cars_n++;
+        cars[North]++;
     }
 }
 
 void cars_ew() {
     if (orientation_w) {
-        cars_w++;
+        cars[West]++;
     } else {
-        cars_e++;
+        cars[East]++;
     }
+}
+
+void switch_lights(Event e, int total_duration, bool phase_adjust) {
+    int tl_g;
+    int tl_r;
+    int tl_r_ok;
+    static byte desired_adjustment = 0;
+
+    if (e == R2G_N || e == R2G_S) {
+        tl_g = TL_NS_G;
+        tl_r = TL_EW_R;
+        tl_r_ok = TL_EW_R_OK;
+    } else if (e == R2G_E || R2G_W) {
+        tl_g = TL_EW_G;
+        tl_r = TL_NS_R;
+        tl_r_ok = TL_NS_R_OK;
+    } else {
+        // Unsupported event; go to standby mode until reset
+        while (true) mode_standby();
+    }
+
+    digitalWrite(tl_g, HIGH);
+    digitalWrite(tl_r, HIGH);
+    for (int i = 0; i < 100; i++) {
+        // LED health check
+        while (digitalRead(tl_r_ok) == LOW)
+        {
+            mode_standby();
+            digitalWrite(tl_g, HIGH);
+            digitalWrite(tl_r, HIGH);
+        }
+        delay((total_duration - YELLOW_DURATION) / 100);
+    }
+
+    if(phase_adjust && adjust_to_neighbor) {
+        desired_adjustment = 60 - phase_diff;
+        Serial.print("Desired adjustment: "); Serial.println(desired_adjustment);
+    }
+    if(adjust_to_neighbor && desired_adjustment >= 20) {
+        delay(1000);
+    }
+
+    digitalWrite(tl_r, LOW);
+    digitalWrite(tl_g, LOW);
+
+    // Yellow for 1 second
+    digitalWrite(TL_NS_Y, HIGH);
+    digitalWrite(TL_EW_Y, HIGH);
+    delay(YELLOW_DURATION);
+    digitalWrite(TL_NS_Y, LOW);
+    digitalWrite(TL_EW_Y, LOW);
 }
