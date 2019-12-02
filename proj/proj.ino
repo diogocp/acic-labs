@@ -61,10 +61,8 @@ enum Event {
     R2G_W = 3
 };
 struct Message {
-    byte dst_x : 4;
-    byte dst_y : 4;
-    byte src_x : 4;
-    byte src_y : 4;
+    byte dst;
+    byte src;
     byte event;
     byte cars_n;
     byte cars_s;
@@ -170,10 +168,8 @@ void mode2() {
     cars[North] = cars[South] = cars[East] = cars[West] = 0;
 
     Message m_ns = {
-        .dst_x = coordinate_x,
-        .dst_y = orientation_s ? coordinate_y + 1 : coordinate_y - 1,
-        .src_x = coordinate_x,
-        .src_y = coordinate_y,
+        .dst = (coordinate_x << 4) | (orientation_s ? coordinate_y + 1 : coordinate_y - 1),
+        .src = (coordinate_x << 4) | coordinate_y,
         .event = orientation_s ? R2G_S : R2G_N,
         .cars_n = last_cars[North],
         .cars_s = last_cars[South],
@@ -181,6 +177,7 @@ void mode2() {
         .cars_w = last_cars[West],
         .timestamp = millis()/100
     };
+    Serial.print("Sending message: "); print_message(&m_ns);
     Wire.beginTransmission(I2C_ADDRESS);
     Wire.write((byte*)&m_ns, sizeof(m_ns));
     Wire.endTransmission();
@@ -190,10 +187,8 @@ void mode2() {
     switch_lights(R2G_N, duty_cycle, true);
 
     Message m_ew = {
-        .dst_x = orientation_w ? coordinate_x + 1 : coordinate_x - 1,
-        .dst_y = coordinate_y,
-        .src_x = coordinate_x,
-        .src_y = coordinate_y,
+        .dst = ((orientation_w ? coordinate_x + 1 : coordinate_x - 1) << 4) | coordinate_y,
+        .src = (coordinate_x << 4) | coordinate_y,
         .event = orientation_w ? R2G_W : R2G_E,
         .cars_n = last_cars[North],
         .cars_s = last_cars[South],
@@ -201,6 +196,7 @@ void mode2() {
         .cars_w = last_cars[West],
         .timestamp = millis()/100
     };
+    Serial.print("Sending message: "); print_message(&m_ew);
     Wire.beginTransmission(I2C_ADDRESS);
     Wire.write((byte*)&m_ew, sizeof(m_ew));
     Wire.endTransmission();
@@ -242,7 +238,7 @@ void message_received(int num_bytes) {
 
     if(cars[max_flow_direction] == 0) {
         adjust_to_neighbor = false;
-    } else if(m->dst_x == coordinate_x && m->dst_y == coordinate_y
+    } else if(m->dst >> 4 == coordinate_x && m->dst & 0x0f == coordinate_y
               && buffer[1] == get_neighbor(max_flow_direction)
               && max_flow_direction == get_max_flow_direction(&buffer[3])) {
         neighbor_period_start = millis()/100;
@@ -260,7 +256,6 @@ Direction get_max_flow_direction(byte* cars) {
     byte maximum = 0;
     byte argmax = 0;
     for(int i = 0; i < 4; i++) {
-        //Serial.print("cars[");Serial.print(i);Serial.print("] = ");Serial.println(cars[i]);
         if(cars[i] > maximum) {
             maximum = cars[i];
             argmax = i;
@@ -294,9 +289,9 @@ byte get_neighbor(Direction dir) {
 
     if(dest_x < 0 || dest_x >= (1<<4) ||
        dest_y < 0 || dest_y >= (1<<4)) {
-        return coordinate_x | (coordinate_y << 4);
+        return (coordinate_x << 4) | coordinate_y;
     }
-    return dest_x | (dest_y << 4);
+    return (dest_x << 4) | dest_y;
 }
 
 
@@ -304,10 +299,10 @@ byte get_neighbor(Direction dir) {
 // Prints a message in JSON format
 void print_message(Message* m) {
     Serial.print("{ ");
-    Serial.print("dst_x: "); Serial.print(m->dst_x); Serial.print(", ");
-    Serial.print("dst_y: "); Serial.print(m->dst_y); Serial.print(", ");
-    Serial.print("src_x: "); Serial.print(m->src_x); Serial.print(", ");
-    Serial.print("src_y: "); Serial.print(m->src_y); Serial.print(", ");
+    Serial.print("dst_x: "); Serial.print(m->dst >> 4); Serial.print(", ");
+    Serial.print("dst_y: "); Serial.print(m->dst & 0x0f); Serial.print(", ");
+    Serial.print("src_x: "); Serial.print(m->src >> 4); Serial.print(", ");
+    Serial.print("src_y: "); Serial.print(m->src & 0x0f); Serial.print(", ");
     Serial.print("event: "); Serial.print(m->event); Serial.print(", ");
     Serial.print("cars_n: "); Serial.print(m->cars_n); Serial.print(", ");
     Serial.print("cars_s: "); Serial.print(m->cars_s); Serial.print(", ");
